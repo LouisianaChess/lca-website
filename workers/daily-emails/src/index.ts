@@ -26,6 +26,7 @@ import {
 } from '../../../functions/utils/email'
 import { sweepPendingCampaigns } from '../../../functions/utils/campaigns'
 import { resolveSiteUrl } from '../../../functions/utils/site'
+import { expireLapsedMemberships } from '../../../functions/utils/membershipExpiry'
 
 interface Env {
   DB: D1Database
@@ -99,6 +100,15 @@ export default {
            AND registration_closes_at <= ?
            AND registration_status = 'open'`,
       ).bind(nowIso).run()
+    })
+
+    // 1c. Lapse memberships whose paid term has ended. Semantics and the
+    //     reasoning behind them live in functions/utils/membershipExpiry.ts,
+    //     where they can be tested — this Worker has no harness of its own.
+    await phase('membership expiry', async () => {
+      const { lapsed } = await expireLapsedMemberships(env.DB, todayStr)
+      // Silent on the usual day, when nobody lapsed.
+      if (lapsed > 0) console.log(`membership expiry: ${lapsed} membership(s) lapsed`)
     })
 
     // 2. Send registration-open reminders
