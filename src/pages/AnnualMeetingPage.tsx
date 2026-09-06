@@ -10,7 +10,7 @@
 // entirely. Anyone who hits that can read the ID off this page and type it
 // into the app, or dial in. That fallback is the whole reason for the page.
 import { useEffect, useState } from 'react'
-import { Calendar, Clock, ExternalLink, FileText, Phone, Video } from 'lucide-react'
+import { Calendar, Clock, ExternalLink, Phone, Video } from 'lucide-react'
 import { PageHero } from '@/components/PageHero'
 import { Button } from '@/components/ui/button'
 import { GOLD_BUTTON } from '@/lib/brand'
@@ -51,8 +51,16 @@ const DIAL_IN = { display: '+1 301 715 8592', tel: '+13017158592' }
  */
 const ONE_TAP = `tel:${DIAL_IN.tel},,${MEETING_ID.replace(/ /g, '')}%23,,,,*${MEETING_PASSCODE}%23`
 
-/** Agenda items, once published. Empty renders the "coming soon" state. */
+/*
+ * Agenda items, once published. Empty renders the "coming soon" state.
+ *
+ * There is no agenda for the 2026 meeting, so the whole section is commented
+ * out below rather than left showing a promise that will not be kept. Both
+ * this and the block in the page body are kept verbatim for next year: fill
+ * AGENDA in, uncomment both, and it works as before.
+ *
 const AGENDA: string[] = []
+ */
 
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -206,7 +214,13 @@ export function AnnualMeetingPage() {
         </div>
 
 
-        {/* ── Agenda ── */}
+        {/*
+          ── Agenda ──
+          No agenda for the 2026 meeting. Kept whole so next year is three
+          steps: restore the AGENDA constant above, remove these two comment
+          wrappers, and put FileText back in the lucide-react import — it is
+          used only here, so lint removes it while this is commented out.
+
         <div className="mt-5 rounded-xl border bg-card p-5 shadow-sm">
           <div className="flex items-center gap-2">
             <FileText className="size-5 text-lca-gold" />
@@ -229,6 +243,7 @@ export function AnnualMeetingPage() {
             </ol>
           )}
         </div>
+        */}
       </section>
     </div>
   )
