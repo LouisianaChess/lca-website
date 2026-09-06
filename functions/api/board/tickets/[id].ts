@@ -1,6 +1,7 @@
 // functions/api/board/tickets/[id].ts
 import type { Env } from '../../../types'
 import { isResponse, requireSeatAccess } from '../../../utils/auth'
+import { recordAdminAction } from '../../../utils/audit'
 import {
   errorResponse,
   handleOptions,
@@ -197,4 +198,48 @@ export const onRequestPatch: PagesFunction<Env> = async (ctx) => {
     .run()
 
   return jsonResponse({ success: true, status: body.status })
+}
+
+/**
+ * Removes a ticket and everything said on it.
+ *
+ * Board members asked for this for two reasons, and both are about the
+ * handover: a seat's tickets pass to whoever holds it next, so a test message
+ * clutters the next holder's inbox forever, and anything a visitor typed that
+ * turned out to be sensitive is disclosed to a person who was never party to
+ * it. Neither is fixable by closing the ticket — resolved tickets are still
+ * readable.
+ *
+ * Same access as reading it: the seat holder, or an admin. Deliberately not
+ * admin-only, because the person who most needs to remove something sensitive
+ * is the one who can see it.
+ *
+ * The messages go first: support_messages has no ON DELETE CASCADE, so
+ * deleting the ticket alone would strand them, invisible and undeletable.
+ */
+export const onRequestDelete: PagesFunction<Env> = async (ctx) => {
+  const access = await requireSeatAccess(ctx.request, ctx.env)
+  if (isResponse(access)) return access
+
+  const ticket = await loadAccessibleTicket(ctx, access.seatIds, access.isAdmin)
+  if (isResponse(ticket)) return ticket
+
+  await ctx.env.DB.batch([
+    ctx.env.DB.prepare('DELETE FROM support_messages WHERE ticket_id = ?').bind(ticket.id),
+    ctx.env.DB.prepare('DELETE FROM support_tickets WHERE id = ?').bind(ticket.id),
+  ])
+
+  // Who deleted what, since the ticket itself is gone. A deletion nobody can
+  // account for afterwards is worse than the clutter it removed.
+  await recordAdminAction(ctx.env.DB, access.member, {
+    action: 'ticket_delete',
+    targetLabel: `${ticket.seat_role ?? 'General'}: "${ticket.subject}"`,
+    detail: {
+      ticket_id: ticket.id,
+      from: `${ticket.name} <${ticket.email}>`,
+      seat_id: ticket.seat_id,
+    },
+  })
+
+  return jsonResponse({ success: true })
 }

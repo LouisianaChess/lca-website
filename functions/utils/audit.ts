@@ -15,6 +15,7 @@ export type AdminAction =
   | 'name_change'
   | 'impersonation_start'
   | 'impersonation_end'
+  | 'ticket_delete'
 
 export interface AuditEntry {
   action: AdminAction

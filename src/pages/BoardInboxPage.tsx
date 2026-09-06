@@ -8,7 +8,7 @@
 // seeing all of it is catching what nobody answered, not reading everything.
 
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ClipboardPaste, Inbox, MailOpen, Send, UserX } from 'lucide-react'
+import { AlertTriangle, ClipboardPaste, Inbox, MailOpen, Send, Trash2, UserX } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -18,6 +18,7 @@ import { GOLD_BUTTON as GOLD } from '@/lib/brand'
 import {
   addBoardTicketNote,
   getBoardTicket,
+  deleteBoardTicket,
   getBoardTickets,
   replyToBoardTicket,
   updateBoardTicketStatus,
@@ -64,6 +65,7 @@ export function BoardInboxPage() {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [denied, setDenied] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   async function loadList() {
     const data = await getBoardTickets()
@@ -144,6 +146,30 @@ export function BoardInboxPage() {
       )
     } finally {
       setSending(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!selected) return
+    // Irreversible and it takes the conversation with it, so the confirm
+    // names the ticket rather than asking "are you sure?" about nothing.
+    if (!confirm(
+      `Permanently delete "${selected.subject}" from ${selected.name}?
+
+` +
+      'The message history goes too. This cannot be undone.',
+    )) return
+
+    setDeleting(true)
+    try {
+      await deleteBoardTicket(selected.id)
+      setSelected(null)
+      setMessages([])
+      await loadList()
+    } catch {
+      setError('Could not delete that ticket.')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -307,10 +333,24 @@ export function BoardInboxPage() {
                           {selected.name} · {selected.email}
                         </p>
                       </div>
-                      <Button type="button" variant="outline" size="sm" onClick={handleResolve}>
-                        <MailOpen className="mr-1.5 size-3.5" />
-                        {selected.status === 'resolved' ? 'Reopen' : 'Mark resolved'}
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button type="button" variant="outline" size="sm" onClick={handleResolve}>
+                          <MailOpen className="mr-1.5 size-3.5" />
+                          {selected.status === 'resolved' ? 'Reopen' : 'Mark resolved'}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="text-red-600 hover:bg-red-50"
+                          disabled={deleting}
+                          onClick={handleDelete}
+                          aria-label="Delete this ticket"
+                        >
+                          <Trash2 className="mr-1.5 size-3.5" />
+                          {deleting ? 'Deleting…' : 'Delete'}
+                        </Button>
+                      </div>
                     </div>
 
                     <div className="space-y-4 py-4">

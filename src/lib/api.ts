@@ -1595,6 +1595,19 @@ export async function updateBoardTicketStatus(
   return handleResponse(response)
 }
 
+/**
+ * Removes a ticket and its messages for good. Available to the seat holder as
+ * well as an admin: the person who most needs to remove something sensitive
+ * before a seat changes hands is the one who can see it.
+ */
+export async function deleteBoardTicket(ticketId: string): Promise<void> {
+  const response = await fetch(`/api/board/tickets/${ticketId}`, {
+    method: 'DELETE',
+    headers: await authHeaders(),
+  })
+  return handleResponse(response)
+}
+
 export interface ApiMySeat {
   id: string
   slug: string
