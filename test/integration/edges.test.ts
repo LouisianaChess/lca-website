@@ -18,6 +18,8 @@ import { onRequestPatch as membershipPatch } from '../../functions/api/admin/mem
 import { onRequestPatch as mePatch, onRequestPost as mePost } from '../../functions/api/me'
 import { onRequestDelete as memberDelete } from '../../functions/api/admin/members/[id]'
 import { onRequestGet as membersGet } from '../../functions/api/admin/members'
+import { onRequestGet as boardTicketsGet } from '../../functions/api/board/tickets'
+import { onRequestDelete as boardTicketDelete } from '../../functions/api/board/tickets/[id]'
 import { onRequestPatch as memberRolePatch } from '../../functions/api/admin/members/[id]/role'
 import { onRequestGet as contactGet, onRequestPost as contactPost } from '../../functions/api/contact'
 import { onRequestPost as donationPost } from '../../functions/api/donations/checkout'
@@ -515,6 +517,101 @@ describe('a membership activates even when the webhook never arrives', () => {
       method: 'POST', as: id, body: { paymentId: 'p-nosession' },
     })
     expect((await res.json<{ pending?: boolean }>()).pending).toBe(true)
+  })
+})
+
+describe('board tickets can be read and deleted', () => {
+  // A seat's tickets pass to whoever holds it next, so a test message clutters
+  // the next holder's inbox forever and anything sensitive is disclosed to
+  // someone who was never party to it. Closing a ticket does not help —
+  // resolved tickets stay readable.
+  async function seatWithTicket(holderId?: string) {
+    const seat = await env.DB.prepare(
+      "SELECT id FROM board_members WHERE is_active = 1 LIMIT 1",
+    ).first<{ id: string }>()
+    if (!seat) throw new Error('no board seat seeded')
+
+    if (holderId) {
+      await env.DB.prepare(
+        `INSERT INTO board_seat_assignments (id, seat_id, member_id, started_at)
+         VALUES (?, ?, ?, date('now'))`,
+      ).bind(`bsa-${holderId}`, seat.id, holderId).run()
+    }
+
+    const ticketId = `tkt-${Math.random().toString(36).slice(2, 8)}`
+    await env.DB.prepare(
+      `INSERT INTO support_tickets (id, name, email, subject, status, seat_id)
+       VALUES (?, 'Visitor', 'visitor@example.org', 'Sensitive thing', 'open', ?)`,
+    ).bind(ticketId, seat.id).run()
+    await env.DB.prepare(
+      `INSERT INTO support_messages (id, ticket_id, sender_type, body)
+       VALUES (?, ?, 'guest', 'please do not keep this')`,
+    ).bind(`msg-${ticketId}`, ticketId).run()
+
+    return { seatId: seat.id, ticketId }
+  }
+
+  const counts = async (ticketId: string) => ({
+    tickets: (await env.DB.prepare('SELECT COUNT(*) n FROM support_tickets WHERE id = ?')
+      .bind(ticketId).first<{ n: number }>())?.n ?? 0,
+    messages: (await env.DB.prepare('SELECT COUNT(*) n FROM support_messages WHERE ticket_id = ?')
+      .bind(ticketId).first<{ n: number }>())?.n ?? 0,
+  })
+
+  it('lists tickets for an admin', async () => {
+    // Regression for the board inbox returning 500 because the query selected
+    // columns migration 0026 never actually added in production.
+    const admin = await seedAdmin()
+    await seatWithTicket()
+    const res = await invoke(boardTicketsGet, { as: admin })
+    expect(res.status).toBe(200)
+    const { tickets } = await res.json<{ tickets: unknown[] }>()
+    expect(tickets.length).toBeGreaterThan(0)
+  })
+
+  it('lets the seat holder delete a ticket, messages and all', async () => {
+    const holder = await seedMember()
+    const { ticketId } = await seatWithTicket(holder)
+
+    const res = await invoke(boardTicketDelete, {
+      method: 'DELETE', as: holder, params: { id: ticketId },
+    })
+    expect(res.status).toBe(200)
+    expect(await counts(ticketId)).toEqual({ tickets: 0, messages: 0 })
+  })
+
+  it('lets an admin delete any ticket', async () => {
+    const admin = await seedAdmin()
+    const { ticketId } = await seatWithTicket()
+
+    expect((await invoke(boardTicketDelete, {
+      method: 'DELETE', as: admin, params: { id: ticketId },
+    })).status).toBe(200)
+    expect(await counts(ticketId)).toEqual({ tickets: 0, messages: 0 })
+  })
+
+  it('refuses a member who holds no seat', async () => {
+    const nobody = await seedMember()
+    const { ticketId } = await seatWithTicket()
+
+    expect((await invoke(boardTicketDelete, {
+      method: 'DELETE', as: nobody, params: { id: ticketId },
+    })).status).toBe(403)
+    expect((await counts(ticketId)).tickets).toBe(1)
+  })
+
+  it('records who deleted what, since the ticket itself is gone', async () => {
+    const admin = await seedAdmin()
+    const { ticketId } = await seatWithTicket()
+    await invoke(boardTicketDelete, { method: 'DELETE', as: admin, params: { id: ticketId } })
+
+    const entry = await env.DB.prepare(
+      `SELECT action, target_label, detail FROM admin_audit_log
+        WHERE action = 'ticket_delete' AND detail LIKE ?`,
+    ).bind(`%${ticketId}%`).first<{ action: string; target_label: string; detail: string }>()
+    expect(entry?.action).toBe('ticket_delete')
+    expect(entry?.target_label).toContain('Sensitive thing')
+    expect(entry?.detail).toContain('visitor@example.org')
   })
 })
 
