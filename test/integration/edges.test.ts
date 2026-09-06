@@ -6,6 +6,7 @@ import {
   emailBehavior,
   emailOutbox,
   stripeBehavior,
+  uscfBehavior,
   invoke,
   resetHarness,
   signStripePayload,
@@ -20,6 +21,7 @@ import { onRequestDelete as memberDelete } from '../../functions/api/admin/membe
 import { onRequestGet as membersGet } from '../../functions/api/admin/members'
 import { onRequestGet as boardTicketsGet } from '../../functions/api/board/tickets'
 import { expireLapsedMemberships } from '../../functions/utils/membershipExpiry'
+import { snapshotMemberRatings } from '../../functions/utils/ratingSnapshots'
 import { onRequestDelete as boardTicketDelete } from '../../functions/api/board/tickets/[id]'
 import { onRequestPatch as memberRolePatch } from '../../functions/api/admin/members/[id]/role'
 import { onRequestGet as contactGet, onRequestPost as contactPost } from '../../functions/api/contact'
@@ -518,6 +520,115 @@ describe('a membership activates even when the webhook never arrives', () => {
       method: 'POST', as: id, body: { paymentId: 'p-nosession' },
     })
     expect((await res.json<{ pending?: boolean }>()).pending).toBe(true)
+  })
+})
+
+describe('US Chess ratings are recorded over time', () => {
+  // The history cannot be fetched — the API returns today's number and has no
+  // history endpoint, and MSA is behind a bot challenge. So a curve exists
+  // only if it is accumulated, and a reading missed is gone.
+  const rated = (regular: number, extra: Record<string, unknown> = {}) => ({
+    ratings: [
+      { ratingSystem: 'R', rating: regular, gamesPlayed: 12, isProvisional: false, floor: 100 },
+      { ratingSystem: 'Q', isProvisional: true },
+    ],
+    lastChangedDate: '2026-09-03',
+    ...extra,
+  })
+
+  const history = async (memberId: string) =>
+    (await env.DB.prepare(
+      `SELECT rating_system, rating, games_played, rating_floor, effective_date
+         FROM uscf_rating_history WHERE member_id = ? ORDER BY recorded_at`,
+    ).bind(memberId).all<{
+      rating_system: string; rating: number; games_played: number
+      rating_floor: number; effective_date: string
+    }>()).results ?? []
+
+  async function memberWithId(uscfId: string) {
+    const id = await seedMember({ uscfId })
+    uscfBehavior.members[uscfId] = rated(1018)
+    return id
+  }
+
+  it('records a reading, with games played and floor', async () => {
+    const id = await memberWithId('11112222')
+    await snapshotMemberRatings(env.DB)
+
+    const rows = await history(id)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].rating_system).toBe('R')
+    expect(rows[0].rating).toBe(1018)
+    expect(rows[0].games_played).toBe(12)
+    expect(rows[0].rating_floor).toBe(100)
+    // The date US Chess says it moved, not the date we noticed.
+    expect(rows[0].effective_date).toBe('2026-09-03')
+  })
+
+  it('also refreshes the rating shown on the profile', async () => {
+    // members.uscf_rating was never written by anything before this.
+    const id = await memberWithId('11112223')
+    await snapshotMemberRatings(env.DB)
+
+    const row = await env.DB.prepare(
+      'SELECT uscf_rating, uscf_rating_updated_at FROM members WHERE id = ?',
+    ).bind(id).first<{ uscf_rating: number; uscf_rating_updated_at: string }>()
+    expect(row?.uscf_rating).toBe(1018)
+    expect(row?.uscf_rating_updated_at).toBeTruthy()
+  })
+
+  it('writes nothing on a night the rating has not moved', async () => {
+    // A rating moves a few times a year. Recording an identical number nightly
+    // would be ~200x the rows for no extra information.
+    const id = await memberWithId('11112224')
+    await snapshotMemberRatings(env.DB)
+    const second = await snapshotMemberRatings(env.DB)
+
+    expect(second.changed).toBe(0)
+    expect(await history(id)).toHaveLength(1)
+  })
+
+  it('adds a row when the rating does move', async () => {
+    const id = await memberWithId('11112225')
+    await snapshotMemberRatings(env.DB)
+
+    uscfBehavior.members['11112225'] = rated(1104)
+    await snapshotMemberRatings(env.DB)
+
+    const rows = await history(id)
+    expect(rows.map((r) => r.rating)).toEqual([1018, 1104])
+  })
+
+  it('records nothing when US Chess is unreachable', async () => {
+    // A gap is honest. A null written here would be indistinguishable later
+    // from a genuine unrating.
+    const id = await memberWithId('11112226')
+    uscfBehavior.reachable = false
+
+    const result = await snapshotMemberRatings(env.DB)
+    expect(result.unreachable).toBeGreaterThan(0)
+    expect(result.changed).toBe(0)
+    expect(await history(id)).toHaveLength(0)
+  })
+
+  it('skips systems the player is unrated in', async () => {
+    // An unrated system comes back with no rating key at all, which is not
+    // the same as a rating of zero.
+    const id = await memberWithId('11112227')
+    await snapshotMemberRatings(env.DB)
+
+    const rows = await history(id)
+    expect(rows.every((r) => r.rating_system === 'R')).toBe(true)
+  })
+
+  it('ignores members who have not supplied a USCF id', async () => {
+    const id = await seedMember()
+    await snapshotMemberRatings(env.DB)
+
+    expect(await history(id)).toHaveLength(0)
+    const row = await env.DB.prepare('SELECT uscf_rating FROM members WHERE id = ?')
+      .bind(id).first<{ uscf_rating: number | null }>()
+    expect(row?.uscf_rating).toBeNull()
   })
 })
 

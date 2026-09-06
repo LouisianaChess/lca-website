@@ -65,6 +65,20 @@ export const stripeBehavior: {
 export const authBehavior: { extraMetadata: Record<string, unknown> } = { extraMetadata: {} }
 
 /**
+ * The US Chess ratings API, keyed by USCF id.
+ *
+ * ratings is what /members/{id} returns verbatim, so a member unrated in a
+ * system is an entry with no `rating` key — not a null, which is a real
+ * distinction the snapshot code has to get right. reachable=false simulates
+ * the outage case, where recording nothing is correct and recording a null
+ * would be indistinguishable later from a genuine unrating.
+ */
+export const uscfBehavior: {
+  reachable: boolean
+  members: Record<string, { ratings: unknown[]; lastChangedDate?: string }>
+} = { reachable: true, members: {} }
+
+/**
  * Work an endpoint handed to context.waitUntil during the current test.
  *
  * The context used to discard these. They did not vanish — a floating
@@ -95,6 +109,8 @@ export function resetHarness(): void {
   stripeBehavior.succeed = true
   stripeBehavior.sessionPaymentStatus = 'paid'
   authBehavior.extraMetadata = {}
+  uscfBehavior.reachable = true
+  uscfBehavior.members = {}
 }
 
 // ── Fetch interceptor ────────────────────────────────────────────
@@ -177,6 +193,27 @@ export function installFetchInterceptor(): void {
         })
       }
       return Response.json({ message: 'not implemented in harness' }, { status: 500 })
+    }
+
+    // US Chess ratings API.
+    if (url.hostname === 'ratings-api.uschess.org') {
+      if (!uscfBehavior.reachable) {
+        return Response.json({ message: 'upstream down' }, { status: 503 })
+      }
+      const MEMBER_PREFIX = '/api/v1/members/'
+      if (url.pathname.startsWith(MEMBER_PREFIX)) {
+        const id = url.pathname.slice(MEMBER_PREFIX.length)
+        const found = uscfBehavior.members[id]
+        if (!found) return Response.json({ message: 'not found' }, { status: 404 })
+        return Response.json({
+          id,
+          firstName: 'Test',
+          lastName: 'Player',
+          status: 'Active',
+          ...found,
+        })
+      }
+      return Response.json({ message: 'not stubbed' }, { status: 500 })
     }
 
     // Stripe: capture Checkout Session creation.

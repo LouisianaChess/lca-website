@@ -44,6 +44,33 @@ export interface UscfSearchResult {
   upstreamUnavailable?: boolean
 }
 
+/**
+ * One rating system's reading, kept as the API gives it.
+ *
+ * UscfPlayer flattens to a single Regular rating, which is the right shape
+ * for the search box but throws away games played, the floor, and the other
+ * systems entirely — all of which a rating history wants to record, because
+ * once a day has passed that reading cannot be fetched again.
+ */
+export interface UscfSystemRating {
+  system: string
+  rating: number | null
+  isProvisional: boolean
+  gamesPlayed: number | null
+  floor: number | null
+}
+
+export interface UscfMemberDetail {
+  uscfId: string
+  fullName: string
+  /** Every rating system the API returned, including the unrated ones. */
+  ratings: UscfSystemRating[]
+  /** When US Chess says any rating last moved — the date a reading belongs to. */
+  lastChangedDate: string | null
+  expirationDate: string | null
+  status: string | null
+}
+
 export interface UscfLookupResult {
   uscfId: string
   rating: number | null
@@ -158,6 +185,50 @@ export async function fetchUscfById(
   }
 
   return { player: toPlayer(result.data), upstreamUnavailable: false }
+}
+
+/**
+ * The full member record, not the flattened one.
+ *
+ * Same call as fetchUscfById — this exists so the nightly snapshot does not
+ * have to re-fetch or reverse-engineer what toPlayer discarded.
+ */
+export async function fetchUscfMemberDetail(
+  uscfId: string,
+): Promise<{ detail: UscfMemberDetail | null; upstreamUnavailable: boolean }> {
+  const id = uscfId.trim()
+  if (!isValidUscfId(id)) return { detail: null, upstreamUnavailable: false }
+
+  const result = await getJson<ApiMember & { lastChangedDate?: string }>(
+    `${API_BASE}/members/${id}`,
+    8000,
+  )
+  if (!result.ok) return { detail: null, upstreamUnavailable: !result.notFound }
+  if (!result.data?.id) return { detail: null, upstreamUnavailable: false }
+
+  const m = result.data
+  const firstName = normalizeName(m.firstName)
+  const lastName = normalizeName(m.lastName)
+
+  return {
+    detail: {
+      uscfId: m.id,
+      fullName: [firstName, lastName].filter(Boolean).join(' '),
+      ratings: (m.ratings ?? []).map((r) => ({
+        system: r.ratingSystem,
+        // A player unrated in a system comes back with no `rating` key at
+        // all, which is different from a rating of zero.
+        rating: typeof r.rating === 'number' ? r.rating : null,
+        isProvisional: r.isProvisional === true,
+        gamesPlayed: typeof r.gamesPlayed === 'number' ? r.gamesPlayed : null,
+        floor: typeof r.floor === 'number' ? r.floor : null,
+      })),
+      lastChangedDate: m.lastChangedDate ?? null,
+      expirationDate: m.expirationDate ?? null,
+      status: m.status ?? null,
+    },
+    upstreamUnavailable: false,
+  }
 }
 
 export async function searchUscfByName(

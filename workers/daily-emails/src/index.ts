@@ -27,6 +27,7 @@ import {
 import { sweepPendingCampaigns } from '../../../functions/utils/campaigns'
 import { resolveSiteUrl } from '../../../functions/utils/site'
 import { expireLapsedMemberships } from '../../../functions/utils/membershipExpiry'
+import { snapshotMemberRatings } from '../../../functions/utils/ratingSnapshots'
 
 interface Env {
   DB: D1Database
@@ -109,6 +110,24 @@ export default {
       const { lapsed } = await expireLapsedMemberships(env.DB, todayStr)
       // Silent on the usual day, when nobody lapsed.
       if (lapsed > 0) console.log(`membership expiry: ${lapsed} membership(s) lapsed`)
+    })
+
+    // 1d. Record each member's US Chess rating.
+    //
+    // Last of the bookkeeping phases on purpose: it makes one outbound call
+    // per member with a USCF id, so it is the slowest thing here and the most
+    // likely to be interrupted. Nothing below depends on it, and a partial
+    // pass is fine — the next night picks up where it left off, because
+    // members are ordered by how long it has been since they were checked.
+    await phase('rating snapshots', async () => {
+      const { checked, changed, unreachable } = await snapshotMemberRatings(env.DB)
+      // Quiet on a normal night: ratings move a few times a year each.
+      if (changed > 0 || unreachable > 0) {
+        console.log(
+          `rating snapshots: ${changed} change(s) across ${checked} member(s)` +
+          (unreachable > 0 ? `, ${unreachable} unreachable` : ''),
+        )
+      }
     })
 
     // 2. Send registration-open reminders
