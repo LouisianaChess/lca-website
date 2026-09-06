@@ -19,6 +19,7 @@ import { onRequestPatch as mePatch, onRequestPost as mePost } from '../../functi
 import { onRequestDelete as memberDelete } from '../../functions/api/admin/members/[id]'
 import { onRequestGet as membersGet } from '../../functions/api/admin/members'
 import { onRequestGet as boardTicketsGet } from '../../functions/api/board/tickets'
+import { expireLapsedMemberships } from '../../functions/utils/membershipExpiry'
 import { onRequestDelete as boardTicketDelete } from '../../functions/api/board/tickets/[id]'
 import { onRequestPatch as memberRolePatch } from '../../functions/api/admin/members/[id]/role'
 import { onRequestGet as contactGet, onRequestPost as contactPost } from '../../functions/api/contact'
@@ -517,6 +518,76 @@ describe('a membership activates even when the webhook never arrives', () => {
       method: 'POST', as: id, body: { paymentId: 'p-nosession' },
     })
     expect((await res.json<{ pending?: boolean }>()).pending).toBe(true)
+  })
+})
+
+describe('a membership lapses when its term ends', () => {
+  // membership_status was written once, at payment, and never again — so a
+  // membership went active and stayed active for good, whatever the expiry
+  // said. Four real members were active with a date months in the past.
+  const TODAY = '2026-09-06'
+
+  const statusOf = async (id: string) =>
+    (await env.DB.prepare('SELECT membership_status FROM members WHERE id = ?')
+      .bind(id).first<{ membership_status: string }>())?.membership_status
+
+  it('expires a membership whose date has passed', async () => {
+    const id = await seedMember({ membershipStatus: 'active' })
+    await env.DB.prepare('UPDATE members SET membership_expiry = ? WHERE id = ?')
+      .bind('2026-08-31', id).run()
+
+    const { lapsed } = await expireLapsedMemberships(env.DB, TODAY)
+    expect(lapsed).toBeGreaterThan(0)
+    expect(await statusOf(id)).toBe('expired')
+  })
+
+  it('leaves a membership expiring today alone', async () => {
+    // The last day is still a day you are a member, which is how paid-through
+    // is read everywhere else.
+    const id = await seedMember({ membershipStatus: 'active' })
+    await env.DB.prepare('UPDATE members SET membership_expiry = ? WHERE id = ?')
+      .bind(TODAY, id).run()
+
+    await expireLapsedMemberships(env.DB, TODAY)
+    expect(await statusOf(id)).toBe('active')
+  })
+
+  it('leaves a future membership alone', async () => {
+    const id = await seedMember({ membershipStatus: 'active' })
+    await env.DB.prepare('UPDATE members SET membership_expiry = ? WHERE id = ?')
+      .bind('2027-09-06', id).run()
+
+    await expireLapsedMemberships(env.DB, TODAY)
+    expect(await statusOf(id)).toBe('active')
+  })
+
+  it('never turns a pending membership into an expired one', async () => {
+    // 'pending' means never paid. It has no term to end, and calling it
+    // expired would claim a membership that never existed.
+    const id = await seedMember({ membershipStatus: 'pending' })
+    await env.DB.prepare('UPDATE members SET membership_expiry = ? WHERE id = ?')
+      .bind('2020-01-01', id).run()
+
+    await expireLapsedMemberships(env.DB, TODAY)
+    expect(await statusOf(id)).toBe('pending')
+  })
+
+  it('leaves an active membership with no expiry alone', async () => {
+    // NULL means nobody has set a term, not that the term has passed.
+    const id = await seedMember({ membershipStatus: 'active' })
+    await expireLapsedMemberships(env.DB, TODAY)
+    expect(await statusOf(id)).toBe('active')
+  })
+
+  it('is idempotent', async () => {
+    const id = await seedMember({ membershipStatus: 'active' })
+    await env.DB.prepare('UPDATE members SET membership_expiry = ? WHERE id = ?')
+      .bind('2026-08-31', id).run()
+
+    await expireLapsedMemberships(env.DB, TODAY)
+    const second = await expireLapsedMemberships(env.DB, TODAY)
+    expect(second.lapsed).toBe(0)
+    expect(await statusOf(id)).toBe('expired')
   })
 })
 
